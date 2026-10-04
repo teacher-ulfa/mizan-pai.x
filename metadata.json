@@ -1,0 +1,6 @@
+{
+  "name": "MIZAN - E-Modul PAI & BP Fase E SMAN 1 Krembung",
+  "description": "Media Pembelajaran Digital Pendidikan Agama Islam dan Budi Pekerti Fase E (Kelas X) SMA Negeri 1 Krembung berbasis Kurikulum Merdeka & Deep Learning dengan asesmen diagnostik, sumatif ANBK, rapor capaian, dan game edukatif.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
