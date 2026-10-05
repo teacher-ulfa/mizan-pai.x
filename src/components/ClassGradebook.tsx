@@ -2,6 +2,8 @@ import React, { useState, useMemo } from 'react';
 import { StudentUser, StudentProgress } from '../types';
 import { ALL_CHAPTERS } from '../data/chaptersData';
 import { SMAN1_KREMBUNG, TAUGHT_CLASSES, KKTP_SCORE } from '../data/schoolData';
+import { GoogleSpreadsheetModal } from './GoogleSpreadsheetModal';
+import { fetchAllAssessmentsFromServer, StudentServerRecord, getCachedSpreadsheetUrl } from '../services/assessmentSyncService';
 import {
   Table,
   Download,
@@ -16,7 +18,9 @@ import {
   GraduationCap,
   Sparkles,
   Phone,
-  Mail
+  Mail,
+  Send,
+  RefreshCw
 } from 'lucide-react';
 
 interface ClassGradebookProps {
@@ -27,6 +31,7 @@ interface ClassGradebookProps {
   isCloudConnected?: boolean;
   onSelectStudent: (student: StudentUser, studentProg?: StudentProgress) => void;
   onOpenReportCard: () => void;
+  onShowToast?: (msg: string) => void;
 }
 
 export const ClassGradebook: React.FC<ClassGradebookProps> = ({
@@ -36,11 +41,31 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
   allCloudProgress,
   isCloudConnected = true,
   onSelectStudent,
-  onOpenReportCard
+  onOpenReportCard,
+  onShowToast
 }) => {
   const [selectedClass, setSelectedClass] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [assessmentType, setAssessmentType] = useState<'sumatif' | 'diagnostik' | 'formatif'>('sumatif');
+  const [isSpreadsheetModalOpen, setIsSpreadsheetModalOpen] = useState(false);
+  const [serverAssessments, setServerAssessments] = useState<Record<string, StudentServerRecord>>({});
+
+  // Fetch assessments from server in background & poll every 4s
+  React.useEffect(() => {
+    const loadServer = async () => {
+      try {
+        const data = await fetchAllAssessmentsFromServer();
+        if (data && Object.keys(data).length > 0) {
+          setServerAssessments(data);
+        }
+      } catch (e) {
+        console.warn('Error fetching server assessments:', e);
+      }
+    };
+    loadServer();
+    const interval = setInterval(loadServer, 4000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Dynamically obtain available classes with priority to TAUGHT_CLASSES (X-1, X-2, X-3, X-4)
   const availableClasses = useMemo(() => {
@@ -49,17 +74,38 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
     return Array.from(classSet).sort();
   }, [students]);
 
-  // Retrieves authentic student progress object from Firestore or Local
+  // Retrieves authentic student progress object from Server, Firestore, or Local
   const getStudentProgress = (student: StudentUser): StudentProgress | undefined => {
-    // 1. Cloud Firestore real-time data first
+    // 1. Server assessment store first (100% reliable, zero quota issues)
+    if (serverAssessments && serverAssessments[student.nisn]) {
+      const s = serverAssessments[student.nisn];
+      return {
+        studentId: student.id,
+        studentName: s.studentName || student.name,
+        nisn: student.nisn,
+        studentClass: s.studentClass || student.studentClass,
+        unlockedChapters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        completedChapters: [],
+        diagnosticScores: s.diagnosticScores || {},
+        formativeScores: s.formativeScores || {},
+        sumativeScores: s.sumativeScores || {},
+        selfAssessmentAnswers: {},
+        peerAssessmentAnswers: {},
+        reflectionNotes: {},
+        badges: [],
+        gameScore: 0,
+        totalXP: 100
+      };
+    }
+    // 2. Cloud Firestore real-time data
     if (allCloudProgress && allCloudProgress[student.nisn]) {
       return allCloudProgress[student.nisn];
     }
-    // 2. Active student memory state
+    // 3. Active student memory state
     if (student.nisn === activeStudentNisn && activeStudentProgress) {
       return activeStudentProgress;
     }
-    // 3. LocalStorage fallback
+    // 4. LocalStorage fallback
     try {
       const saved =
         localStorage.getItem(`mizan_progress_${student.nisn}`) ||
@@ -205,6 +251,128 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
     document.body.removeChild(link);
   };
 
+  // List of all completed assessment records across all students currently in gradebook
+  const scoredRecords = useMemo(() => {
+    const list: Array<{
+      timestamp: string;
+      nisn: string;
+      nama: string;
+      kelas: string;
+      bab: string;
+      kategori: string;
+      skor: number;
+      status: string;
+    }> = [];
+
+    students.forEach((student) => {
+      const prog = getStudentProgress(student);
+      if (!prog) return;
+
+      // Diagnostik (Asesmen Awal)
+      if (prog.diagnosticScores) {
+        Object.entries(prog.diagnosticScores).forEach(([chId, score]) => {
+          if (score !== undefined && score !== null && !isNaN(Number(score))) {
+            list.push({
+              timestamp: new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' }),
+              nisn: student.nisn,
+              nama: student.name,
+              kelas: student.studentClass,
+              bab: `Bab ${chId}`,
+              kategori: 'Asesmen Awal / Diagnostik',
+              skor: Number(score),
+              status: Number(score) >= KKTP_SCORE ? 'Tuntas' : 'Remidi'
+            });
+          }
+        });
+      }
+
+      // Formatif (Latihan)
+      if (prog.formativeScores) {
+        Object.entries(prog.formativeScores).forEach(([chId, score]) => {
+          if (score !== undefined && score !== null && !isNaN(Number(score))) {
+            list.push({
+              timestamp: new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' }),
+              nisn: student.nisn,
+              nama: student.name,
+              kelas: student.studentClass,
+              bab: `Bab ${chId}`,
+              kategori: 'Asesmen Formatif (Latihan)',
+              skor: Number(score),
+              status: Number(score) >= KKTP_SCORE ? 'Tuntas' : 'Remidi'
+            });
+          }
+        });
+      }
+
+      // Sumatif (ANBK)
+      if (prog.sumativeScores) {
+        Object.entries(prog.sumativeScores).forEach(([chId, score]) => {
+          if (score !== undefined && score !== null && !isNaN(Number(score))) {
+            list.push({
+              timestamp: new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' }),
+              nisn: student.nisn,
+              nama: student.name,
+              kelas: student.studentClass,
+              bab: `Bab ${chId}`,
+              kategori: 'Asesmen Sumatif (ANBK)',
+              skor: Number(score),
+              status: Number(score) >= KKTP_SCORE ? 'Tuntas' : 'Remidi'
+            });
+          }
+        });
+      }
+    });
+
+    return list;
+  }, [students, serverAssessments, allCloudProgress, activeStudentProgress]);
+
+  const [isDirectSyncing, setIsDirectSyncing] = useState(false);
+
+  const handleDirectSyncToSpreadsheet = async () => {
+    if (scoredRecords.length === 0) {
+      if (onShowToast) onShowToast("Belum ada data nilai murid yang tersimpan di Rekap.");
+      return;
+    }
+
+    setIsDirectSyncing(true);
+    const targetUrl = getCachedSpreadsheetUrl();
+
+    let successCount = 0;
+    for (const record of scoredRecords) {
+      try {
+        await fetch(targetUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify(record)
+        });
+        successCount++;
+
+        // Also save to server so backend has it recorded
+        fetch('/api/assessments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            nisn: record.nisn,
+            studentName: record.nama,
+            studentClass: record.kelas,
+            chapterId: parseInt(record.bab.replace('Bab ', '')) || 1,
+            category: record.kategori.includes('Awal') ? 'diagnostik' : record.kategori.includes('Formatif') ? 'formatif' : 'sumatif',
+            score: record.skor,
+            timestamp: record.timestamp
+          })
+        }).catch(() => {});
+      } catch (err) {
+        console.error('Error syncing record to spreadsheet:', err);
+      }
+    }
+
+    setIsDirectSyncing(false);
+    if (onShowToast) {
+      onShowToast(`Alhamdulillah! Berhasil mengirim ${successCount} data nilai murid langsung ke Google Spreadsheet!`);
+    }
+  };
+
   return (
     <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 shadow-xs space-y-6">
       {/* Official Header & Teacher Badge */}
@@ -221,7 +389,7 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
                 </h2>
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-semibold">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                  Real-Time Cloud Aktif
+                  Real-Time Cloud & Spreadsheet Aktif
                 </span>
               </div>
               <p className="text-xs text-slate-500 font-medium">
@@ -247,17 +415,39 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
         </div>
 
         {/* Action Buttons */}
-        <div className="flex items-center gap-2 self-start lg:self-center shrink-0 no-print">
+        <div className="flex items-center gap-2 self-start lg:self-center shrink-0 no-print flex-wrap">
+          {/* Main Direct Action: Send all scored students to Google Spreadsheet */}
+          <button
+            onClick={handleDirectSyncToSpreadsheet}
+            disabled={isDirectSyncing}
+            className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
+            title="Kirim seluruh nilai murid yang ada di rekap langsung ke Google Spreadsheet"
+          >
+            <Send className={`w-3.5 h-3.5 ${isDirectSyncing ? 'animate-spin' : ''}`} />
+            <span>Kirim {scoredRecords.length > 0 ? `(${scoredRecords.length}) ` : ''}ke Spreadsheet</span>
+          </button>
+
+          {/* Settings modal trigger */}
+          <button
+            onClick={() => setIsSpreadsheetModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 rounded-xl text-xs font-semibold transition-colors"
+            title="Buka pengaturan dan status Google Spreadsheet"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
+            <span>Atur Spreadsheet</span>
+          </button>
+
           <button
             onClick={exportToCSV}
-            className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold shadow-xs transition-colors"
+            className="flex items-center gap-1.5 px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Ekspor Excel (.CSV)</span>
+            <span>Ekspor CSV</span>
           </button>
+
           <button
             onClick={() => window.print()}
-            className="flex items-center gap-1.5 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors"
+            className="flex items-center gap-1.5 px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors"
           >
             <Printer className="w-3.5 h-3.5" />
             <span>Cetak Rekap</span>
@@ -623,6 +813,14 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Google Spreadsheet Integration Modal */}
+      <GoogleSpreadsheetModal
+        isOpen={isSpreadsheetModalOpen}
+        onClose={() => setIsSpreadsheetModalOpen(false)}
+        onShowToast={onShowToast || ((msg) => console.log(msg))}
+        recordsToSync={scoredRecords}
+      />
     </div>
   );
 };

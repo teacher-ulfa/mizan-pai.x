@@ -25,6 +25,8 @@ import { StudentSelectorModal } from './components/StudentSelectorModal';
 import { ImportStudentsModal } from './components/ImportStudentsModal';
 import { ClassGradebook } from './components/ClassGradebook';
 import { KataPengantarCard } from './components/KataPengantarCard';
+import { StudentWelcomeModal } from './components/StudentWelcomeModal';
+import { submitAssessmentResult } from './services/assessmentSyncService';
 import {
   saveStudentProgressToFirestore,
   subscribeToAllStudentsProgress,
@@ -46,6 +48,13 @@ export default function App() {
   const [students, setStudents] = useState<StudentUser[]>(loadStudentsList);
   const [isStudentSelectorOpen, setIsStudentSelectorOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isWelcomeModalOpen, setIsWelcomeModalOpen] = useState(() => {
+    try {
+      return !isTeacherModeActive && !localStorage.getItem('mizan_identity_confirmed');
+    } catch {
+      return false;
+    }
+  });
 
   // Real-time Cloud Firestore state
   const [allCloudProgress, setAllCloudProgress] = useState<Record<string, StudentProgress>>({});
@@ -234,6 +243,17 @@ export default function App() {
       }
       return updated;
     });
+
+    // Send immediately to Server & Google Spreadsheet
+    submitAssessmentResult({
+      nisn: progress.nisn,
+      studentName: progress.studentName,
+      studentClass: progress.studentClass,
+      chapterId: currentChapterId,
+      category: 'diagnostik',
+      score
+    });
+
     showToast(`Asesmen Awal Bab ${currentChapterId} tersimpan: ${score} Poin (+25 XP)`);
   };
 
@@ -252,6 +272,17 @@ export default function App() {
       }
       return updated;
     });
+
+    // Send immediately to Server & Google Spreadsheet
+    submitAssessmentResult({
+      nisn: progress.nisn,
+      studentName: progress.studentName,
+      studentClass: progress.studentClass,
+      chapterId: currentChapterId,
+      category: 'formatif',
+      score
+    });
+
     showToast(`Latihan Formatif Bab ${currentChapterId} tersimpan: ${score} Poin (+35 XP)`);
   };
 
@@ -275,6 +306,18 @@ export default function App() {
       }
       return updatedProgress;
     });
+
+    // Send immediately to Server & Google Spreadsheet
+    submitAssessmentResult({
+      nisn: progress.nisn,
+      studentName: progress.studentName,
+      studentClass: progress.studentClass,
+      chapterId: currentChapterId,
+      category: 'sumatif',
+      score
+    });
+
+    showToast(`Asesmen Sumatif Bab ${currentChapterId} tersimpan: ${score} Poin (+50 XP)`);
   };
 
   const handleUnlockNextChapter = () => {
@@ -511,6 +554,7 @@ export default function App() {
             isCloudConnected={isCloudConnected}
             onSelectStudent={handleSelectStudentFromRoster}
             onOpenReportCard={() => setActiveTab('rapor')}
+            onShowToast={showToast}
           />
         )}
 
@@ -547,6 +591,16 @@ export default function App() {
         isOpen={isImportModalOpen}
         onClose={() => setIsImportModalOpen(false)}
         onImport={handleImportStudents}
+      />
+
+      <StudentWelcomeModal
+        isOpen={isWelcomeModalOpen}
+        onClose={() => setIsWelcomeModalOpen(false)}
+        students={students}
+        onSelectStudent={(s) => {
+          handleSelectStudentFromRoster(s);
+          setIsWelcomeModalOpen(false);
+        }}
       />
 
       {/* Official Footer with Ulfatul Husna, S.Ag.,M.Pd. and SMANIKRE */}
