@@ -23,7 +23,9 @@ interface ClassGradebookProps {
   students: StudentUser[];
   activeStudentNisn: string;
   activeStudentProgress?: StudentProgress;
-  onSelectStudent: (student: StudentUser) => void;
+  allCloudProgress?: Record<string, StudentProgress>;
+  isCloudConnected?: boolean;
+  onSelectStudent: (student: StudentUser, studentProg?: StudentProgress) => void;
   onOpenReportCard: () => void;
 }
 
@@ -31,11 +33,14 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
   students,
   activeStudentNisn,
   activeStudentProgress,
+  allCloudProgress,
+  isCloudConnected = true,
   onSelectStudent,
   onOpenReportCard
 }) => {
   const [selectedClass, setSelectedClass] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const [assessmentType, setAssessmentType] = useState<'sumatif' | 'diagnostik' | 'formatif'>('sumatif');
 
   // Dynamically obtain available classes with priority to TAUGHT_CLASSES (X-1, X-2, X-3, X-4)
   const availableClasses = useMemo(() => {
@@ -44,30 +49,42 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
     return Array.from(classSet).sort();
   }, [students]);
 
-  // Retrieves authentic student scores without generating mock/simulated numbers
-  const getStudentScores = (student: StudentUser): Record<number, number> => {
-    // 1. If currently active student, use authentic state from App
-    if (student.nisn === activeStudentNisn && activeStudentProgress?.sumativeScores) {
-      return activeStudentProgress.sumativeScores;
+  // Retrieves authentic student progress object from Firestore or Local
+  const getStudentProgress = (student: StudentUser): StudentProgress | undefined => {
+    // 1. Cloud Firestore real-time data first
+    if (allCloudProgress && allCloudProgress[student.nisn]) {
+      return allCloudProgress[student.nisn];
     }
-
-    // 2. Check for locally saved progress by student NISN
+    // 2. Active student memory state
+    if (student.nisn === activeStudentNisn && activeStudentProgress) {
+      return activeStudentProgress;
+    }
+    // 3. LocalStorage fallback
     try {
       const saved =
         localStorage.getItem(`mizan_progress_${student.nisn}`) ||
         localStorage.getItem(`mizan_student_progress_${student.nisn}`);
       if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && parsed.sumativeScores) {
-          return parsed.sumativeScores;
-        }
+        return JSON.parse(saved);
       }
     } catch (e) {
       console.error(e);
     }
+    return undefined;
+  };
 
-    // 3. Return clean empty scores record (all demo mock data removed)
-    return {};
+  // Retrieves authentic student scores based on selected assessment category
+  const getStudentScores = (student: StudentUser): Record<number, number> => {
+    const prog = getStudentProgress(student);
+    if (!prog) return {};
+
+    if (assessmentType === 'diagnostik') {
+      return prog.diagnosticScores || {};
+    }
+    if (assessmentType === 'formatif') {
+      return prog.formativeScores || {};
+    }
+    return prog.sumativeScores || {};
   };
 
   const filteredStudents = useMemo(() => {
@@ -116,12 +133,13 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
       tuntasCount,
       tuntasPercent
     };
-  }, [filteredStudents, activeStudentNisn, activeStudentProgress]);
+  }, [filteredStudents, activeStudentNisn, activeStudentProgress, allCloudProgress, assessmentType]);
 
   const exportToCSV = () => {
     const titleHeader = [
       `"REKAPITULASI BUKU NILAI PENDIDIKAN AGAMA ISLAM DAN BUDI PEKERTI FASE E"`,
       `"SMA NEGERI 1 KREMBUNG - TAHUN AJARAN ${SMAN1_KREMBUNG.academicYear}"`,
+      `"Kategori Penilaian: ${assessmentType === 'diagnostik' ? 'Asesmen Awal / Diagnostik' : assessmentType === 'formatif' ? 'Asesmen Formatif (Latihan)' : 'Asesmen Sumatif (ANBK)'}"`,
       `"Kepala Sekolah: ${SMAN1_KREMBUNG.principalName} | NIP: ${SMAN1_KREMBUNG.principalNip} | ${SMAN1_KREMBUNG.principalPangkat}"`,
       `"Guru Pengampu: ${SMAN1_KREMBUNG.teacherName} | NIP: ${SMAN1_KREMBUNG.teacherNip} | ${SMAN1_KREMBUNG.teacherPangkat}"`,
       `"Kelas: ${selectedClass === 'all' ? 'X-1, X-2, X-3, X-4 (Semua Kelas Diampu)' : selectedClass} | Dicetak: ${new Date().toLocaleDateString('id-ID')}"`,
@@ -180,7 +198,7 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
     link.setAttribute("href", url);
     link.setAttribute(
       "download",
-      `Rekap_Nilai_PAI_Kelas_${selectedClass === 'all' ? 'X-1_sd_X-4_Semua' : selectedClass}_SMAN1_Krembung_Ulfatul_Husna.csv`
+      `Rekap_Nilai_PAI_${assessmentType}_Kelas_${selectedClass === 'all' ? 'X-1_sd_X-4_Semua' : selectedClass}_SMAN1_Krembung.csv`
     );
     document.body.appendChild(link);
     link.click();
@@ -197,9 +215,15 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
               <Table className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-xl sm:text-2xl font-bold font-serif text-slate-900">
-                Buku Nilai & Rekapitulasi Capaian Kelas X
-              </h2>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-xl sm:text-2xl font-bold font-serif text-slate-900">
+                  Buku Nilai & Rekapitulasi Capaian Kelas X
+                </h2>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-semibold">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                  Real-Time Cloud Aktif
+                </span>
+              </div>
               <p className="text-xs text-slate-500 font-medium">
                 Pendidikan Agama Islam & Budi Pekerti (Fase E) · SMA Negeri 1 Krembung
               </p>
@@ -241,11 +265,55 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
         </div>
       </div>
 
+      {/* Assessment Category Selector (Tab Pilhan Kategori Asesmen) */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-slate-50 rounded-2xl border border-slate-200 no-print">
+        <div className="flex items-center gap-2 overflow-x-auto text-xs py-0.5">
+          <span className="font-bold text-slate-700 text-xs shrink-0 flex items-center gap-1.5">
+            <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+            <span>Kategori Asesmen:</span>
+          </span>
+          <button
+            onClick={() => setAssessmentType('sumatif')}
+            className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+              assessmentType === 'sumatif'
+                ? 'bg-emerald-700 text-white shadow-xs'
+                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            <span>Asesmen Sumatif (Akhir Bab)</span>
+          </button>
+          <button
+            onClick={() => setAssessmentType('diagnostik')}
+            className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+              assessmentType === 'diagnostik'
+                ? 'bg-emerald-700 text-white shadow-xs'
+                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            <span>Asesmen Awal / Diagnostik</span>
+          </button>
+          <button
+            onClick={() => setAssessmentType('formatif')}
+            className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+              assessmentType === 'formatif'
+                ? 'bg-emerald-700 text-white shadow-xs'
+                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            <span>Asesmen Formatif (Latihan)</span>
+          </button>
+        </div>
+
+        <div className="text-xs text-slate-500 font-medium shrink-0">
+          Menampilkan: <strong className="text-emerald-800">{assessmentType === 'diagnostik' ? 'Asesmen Awal (Kesiapan Belajar)' : assessmentType === 'formatif' ? 'Asesmen Formatif (Latihan)' : 'Asesmen Sumatif (Standar ANBK)'}</strong>
+        </div>
+      </div>
+
       {/* Class Statistics Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="p-4 rounded-2xl bg-linear-to-br from-emerald-50 to-teal-50/50 border border-emerald-200 text-emerald-950 space-y-1">
           <div className="flex items-center justify-between text-xs font-semibold text-emerald-800">
-            <span>Siswa Tampil</span>
+            <span>Siswa Terdaftar</span>
             <Users className="w-4 h-4 text-emerald-600" />
           </div>
           <div className="text-2xl font-black text-emerald-950 font-serif">
@@ -380,8 +448,11 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
               <th className="py-2.5 px-3 border-r border-slate-200 w-16 text-center">Kelas</th>
               <th className="py-2.5 px-2 border-r border-slate-200 w-10 text-center">L/P</th>
               {ALL_CHAPTERS.map(ch => (
-                <th key={ch.id} className="py-2.5 px-2 border-r border-slate-200 text-center w-12" title={`Bab ${ch.number}: ${ch.shortTitle}`}>
+                <th key={ch.id} className="py-2.5 px-2 border-r border-slate-200 text-center w-14" title={`Bab ${ch.number}: ${ch.shortTitle}`}>
                   B{ch.number}
+                  <span className="block text-[9px] font-normal text-slate-400">
+                    {assessmentType === 'diagnostik' ? 'Awal' : assessmentType === 'formatif' ? 'Form.' : 'Sum.'}
+                  </span>
                 </th>
               ))}
               <th className="py-2.5 px-3 border-r border-slate-200 text-center w-16">Rata²</th>
@@ -398,6 +469,7 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
               </tr>
             ) : (
               filteredStudents.map((student, idx) => {
+                const prog = getStudentProgress(student);
                 const scores = getStudentScores(student);
                 let sum = 0;
                 let count = 0;
@@ -408,7 +480,8 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
                     count += 1;
                   }
                 });
-                const avg = count > 0 ? Math.round(sum / count) : 0;
+                const numericAvg = count > 0 ? Math.round(sum / count) : null;
+                const avg = numericAvg !== null ? numericAvg : "-";
                 const isActive = student.nisn === activeStudentNisn;
 
                 return (
@@ -420,12 +493,33 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
                       {student.nisn}
                     </td>
                     <td className="py-2.5 px-3 border-r border-slate-100 font-semibold text-slate-900">
-                      <div className="flex items-center gap-1.5">
-                        <span>{student.name}</span>
-                        {isActive && (
-                          <span className="text-[9px] px-1.5 py-0.5 bg-emerald-600 text-white rounded font-bold">
-                            Aktif
-                          </span>
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <span>{student.name}</span>
+                          {isActive && (
+                            <span className="text-[9px] px-1.5 py-0.5 bg-emerald-600 text-white rounded font-bold">
+                              Aktif
+                            </span>
+                          )}
+                        </div>
+                        {prog && (
+                          <div className="flex items-center gap-1.5 mt-0.5 text-[9px] font-normal text-slate-500 flex-wrap">
+                            {Object.keys(prog.diagnosticScores || {}).length > 0 && (
+                              <span className="text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200">
+                                Awal: {Object.keys(prog.diagnosticScores).length} Bab
+                              </span>
+                            )}
+                            {Object.keys(prog.formativeScores || {}).length > 0 && (
+                              <span className="text-teal-700 bg-teal-50 px-1 py-0.2 rounded border border-teal-200">
+                                Formatif: {Object.keys(prog.formativeScores).length} Bab
+                              </span>
+                            )}
+                            {Object.keys(prog.sumativeScores || {}).length > 0 && (
+                              <span className="text-amber-800 bg-amber-50 px-1 py-0.2 rounded border border-amber-200">
+                                Sumatif: {Object.keys(prog.sumativeScores).length} Bab
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
                     </td>
@@ -457,11 +551,11 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
                     </td>
 
                     <td className="py-2.5 px-3 border-r border-slate-100 text-center">
-                      {count > 0 ? (
+                      {count > 0 && numericAvg !== null ? (
                         <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-                          avg >= KKTP_SCORE ? 'bg-emerald-100 text-emerald-900' : 'bg-rose-100 text-rose-800'
+                          numericAvg >= KKTP_SCORE ? 'bg-emerald-100 text-emerald-900' : 'bg-rose-100 text-rose-800'
                         }`}>
-                          {avg >= KKTP_SCORE ? 'TUNTAS' : 'REMIDI'}
+                          {numericAvg >= KKTP_SCORE ? 'TUNTAS' : 'REMIDI'}
                         </span>
                       ) : (
                         <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-400">
@@ -473,10 +567,11 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
                     <td className="py-2.5 px-3 text-center no-print">
                       <button
                         onClick={() => {
-                          onSelectStudent(student);
+                          onSelectStudent(student, prog);
                           onOpenReportCard();
                         }}
                         className="text-xs font-semibold text-emerald-700 hover:text-emerald-900 flex items-center justify-center gap-0.5 mx-auto hover:underline"
+                        title="Buka Lembar Rapor Lengkap Murid"
                       >
                         <span>Rapor</span>
                         <ArrowUpRight className="w-3 h-3" />

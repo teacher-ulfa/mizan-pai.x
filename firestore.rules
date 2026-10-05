@@ -1,0 +1,33 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper to validate incoming student progress data
+    function isValidStudentProgress(data) {
+      return data.keys().hasAll(['nisn', 'studentName', 'studentClass']) &&
+             data.nisn is string &&
+             data.studentName is string &&
+             data.studentClass is string;
+    }
+
+    // Helper to validate discussion posts
+    function isValidDiscussionPost(data) {
+      return data.keys().hasAll(['id', 'chapterId', 'authorName', 'content']) &&
+             data.id is string &&
+             data.chapterId is int &&
+             data.authorName is string &&
+             data.content is string;
+    }
+
+    match /student_progress/{nisn} {
+      allow read: if true;
+      allow create, update: if isValidStudentProgress(request.resource.data);
+      allow delete: if false;
+    }
+
+    match /discussions/{discussionId} {
+      allow read: if true;
+      allow create, update: if isValidDiscussionPost(request.resource.data);
+      allow delete: if false;
+    }
+  }
+}

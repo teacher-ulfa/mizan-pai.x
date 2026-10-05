@@ -1,0 +1,55 @@
+{
+  "entities": {
+    "StudentProgress": {
+      "title": "StudentProgress",
+      "description": "Progress and assessment results for a student across all 10 chapters",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "nisn": { "type": "string" },
+        "studentClass": { "type": "string" },
+        "unlockedChapters": { "type": "array" },
+        "completedChapters": { "type": "array" },
+        "diagnosticScores": { "type": "object" },
+        "formativeScores": { "type": "object" },
+        "sumativeScores": { "type": "object" },
+        "selfAssessmentAnswers": { "type": "object" },
+        "peerAssessmentAnswers": { "type": "object" },
+        "reflectionNotes": { "type": "object" },
+        "badges": { "type": "array" },
+        "gameScore": { "type": "number" },
+        "totalXP": { "type": "number" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["nisn", "studentName", "studentClass"]
+    },
+    "DiscussionPost": {
+      "title": "DiscussionPost",
+      "description": "Interactive discussion post in Pojok Diskusi",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "chapterId": { "type": "number" },
+        "authorName": { "type": "string" },
+        "authorRole": { "type": "string" },
+        "authorAvatar": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "content": { "type": "string" },
+        "likes": { "type": "number" },
+        "replies": { "type": "array" }
+      },
+      "required": ["id", "chapterId", "authorName", "content"]
+    }
+  },
+  "firestore": {
+    "/student_progress/{nisn}": {
+      "schema": "StudentProgress",
+      "description": "Real-time sync of student learning progress and assessments"
+    },
+    "/discussions/{discussionId}": {
+      "schema": "DiscussionPost",
+      "description": "Real-time class discussion posts and peer interactions"
+    }
+  }
+}
