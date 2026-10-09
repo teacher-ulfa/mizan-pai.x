@@ -3,7 +3,12 @@ import { StudentUser, StudentProgress } from '../types';
 import { ALL_CHAPTERS } from '../data/chaptersData';
 import { SMAN1_KREMBUNG, TAUGHT_CLASSES, KKTP_SCORE } from '../data/schoolData';
 import { GoogleSpreadsheetModal } from './GoogleSpreadsheetModal';
-import { fetchAllAssessmentsFromServer, StudentServerRecord, getCachedSpreadsheetUrl } from '../services/assessmentSyncService';
+import {
+  fetchAllAssessmentsFromServer,
+  StudentServerRecord,
+  getCachedSpreadsheetUrl,
+  getImportedSpreadsheetScores
+} from '../services/assessmentSyncService';
 import {
   Table,
   Download,
@@ -20,7 +25,9 @@ import {
   Phone,
   Mail,
   Send,
-  RefreshCw
+  RefreshCw,
+  ArrowDownToLine,
+  ArrowUpFromLine
 } from 'lucide-react';
 
 interface ClassGradebookProps {
@@ -49,6 +56,11 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
   const [assessmentType, setAssessmentType] = useState<'sumatif' | 'diagnostik' | 'formatif'>('sumatif');
   const [isSpreadsheetModalOpen, setIsSpreadsheetModalOpen] = useState(false);
   const [serverAssessments, setServerAssessments] = useState<Record<string, StudentServerRecord>>({});
+  const [importedAssessments, setImportedAssessments] = useState<Record<string, StudentServerRecord>>(() => getImportedSpreadsheetScores());
+
+  const reloadImported = () => {
+    setImportedAssessments(getImportedSpreadsheetScores());
+  };
 
   // Fetch assessments from server in background & poll every 4s
   React.useEffect(() => {
@@ -74,49 +86,68 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
     return Array.from(classSet).sort();
   }, [students]);
 
-  // Retrieves authentic student progress object from Server, Firestore, or Local
+  // Retrieves authentic student progress object by merging ALL available sources (Imported, Server, Cloud, Local)
   const getStudentProgress = (student: StudentUser): StudentProgress | undefined => {
-    // 1. Server assessment store first (100% reliable, zero quota issues)
-    if (serverAssessments && serverAssessments[student.nisn]) {
-      const s = serverAssessments[student.nisn];
-      return {
-        studentId: student.id,
-        studentName: s.studentName || student.name,
-        nisn: student.nisn,
-        studentClass: s.studentClass || student.studentClass,
-        unlockedChapters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-        completedChapters: [],
-        diagnosticScores: s.diagnosticScores || {},
-        formativeScores: s.formativeScores || {},
-        sumativeScores: s.sumativeScores || {},
-        selfAssessmentAnswers: {},
-        peerAssessmentAnswers: {},
-        reflectionNotes: {},
-        badges: [],
-        gameScore: 0,
-        totalXP: 100
-      };
-    }
-    // 2. Cloud Firestore real-time data
-    if (allCloudProgress && allCloudProgress[student.nisn]) {
-      return allCloudProgress[student.nisn];
-    }
-    // 3. Active student memory state
-    if (student.nisn === activeStudentNisn && activeStudentProgress) {
-      return activeStudentProgress;
-    }
-    // 4. LocalStorage fallback
+    const serverData = serverAssessments[student.nisn];
+    const importedData = importedAssessments[student.nisn];
+    const cloudData = allCloudProgress ? allCloudProgress[student.nisn] : undefined;
+    const activeData = student.nisn === activeStudentNisn ? activeStudentProgress : undefined;
+
+    let localData: StudentProgress | undefined;
     try {
       const saved =
         localStorage.getItem(`mizan_progress_${student.nisn}`) ||
         localStorage.getItem(`mizan_student_progress_${student.nisn}`);
       if (saved) {
-        return JSON.parse(saved);
+        localData = JSON.parse(saved);
       }
     } catch (e) {
       console.error(e);
     }
-    return undefined;
+
+    if (!serverData && !importedData && !cloudData && !activeData && !localData) {
+      return undefined;
+    }
+
+    const mergedDiag: Record<number, number> = {
+      ...(localData?.diagnosticScores || {}),
+      ...(cloudData?.diagnosticScores || {}),
+      ...(activeData?.diagnosticScores || {}),
+      ...(serverData?.diagnosticScores || {}),
+      ...(importedData?.diagnosticScores || {})
+    };
+    const mergedForm: Record<number, number> = {
+      ...(localData?.formativeScores || {}),
+      ...(cloudData?.formativeScores || {}),
+      ...(activeData?.formativeScores || {}),
+      ...(serverData?.formativeScores || {}),
+      ...(importedData?.formativeScores || {})
+    };
+    const mergedSum: Record<number, number> = {
+      ...(localData?.sumativeScores || {}),
+      ...(cloudData?.sumativeScores || {}),
+      ...(activeData?.sumativeScores || {}),
+      ...(serverData?.sumativeScores || {}),
+      ...(importedData?.sumativeScores || {})
+    };
+
+    return {
+      studentId: student.id,
+      studentName: importedData?.studentName || serverData?.studentName || cloudData?.studentName || student.name,
+      nisn: student.nisn,
+      studentClass: importedData?.studentClass || serverData?.studentClass || cloudData?.studentClass || student.studentClass,
+      unlockedChapters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      completedChapters: cloudData?.completedChapters || activeData?.completedChapters || [],
+      diagnosticScores: mergedDiag,
+      formativeScores: mergedForm,
+      sumativeScores: mergedSum,
+      selfAssessmentAnswers: cloudData?.selfAssessmentAnswers || {},
+      peerAssessmentAnswers: cloudData?.peerAssessmentAnswers || {},
+      reflectionNotes: cloudData?.reflectionNotes || {},
+      badges: cloudData?.badges || [],
+      gameScore: cloudData?.gameScore || 0,
+      totalXP: 100
+    };
   };
 
   // Retrieves authentic student scores based on selected assessment category
@@ -324,7 +355,37 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
     });
 
     return list;
-  }, [students, serverAssessments, allCloudProgress, activeStudentProgress]);
+  }, [students, serverAssessments, importedAssessments, allCloudProgress, activeStudentProgress]);
+
+  // Count total recorded scores in each category
+  const categoryCounts = useMemo(() => {
+    let diag = 0;
+    let form = 0;
+    let sum = 0;
+
+    students.forEach((student) => {
+      const prog = getStudentProgress(student);
+      if (!prog) return;
+      if (prog.diagnosticScores) {
+        diag += Object.keys(prog.diagnosticScores).length;
+      }
+      if (prog.formativeScores) {
+        form += Object.keys(prog.formativeScores).length;
+      }
+      if (prog.sumativeScores) {
+        sum += Object.keys(prog.sumativeScores).length;
+      }
+    });
+
+    return { diag, form, sum };
+  }, [students, serverAssessments, importedAssessments, allCloudProgress, activeStudentProgress]);
+
+  // If sumatif has 0 scores and diagnostik has scores, default view to diagnostik
+  React.useEffect(() => {
+    if (categoryCounts.sum === 0 && categoryCounts.diag > 0 && assessmentType === 'sumatif') {
+      setAssessmentType('diagnostik');
+    }
+  }, [categoryCounts.diag, categoryCounts.sum]);
 
   const [isDirectSyncing, setIsDirectSyncing] = useState(false);
 
@@ -416,25 +477,25 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
 
         {/* Action Buttons */}
         <div className="flex items-center gap-2 self-start lg:self-center shrink-0 no-print flex-wrap">
-          {/* Main Direct Action: Send all scored students to Google Spreadsheet */}
+          {/* Main Action 1: Tarik data dari Google Spreadsheet ke MIZAN */}
+          <button
+            onClick={() => setIsSpreadsheetModalOpen(true)}
+            className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-800 hover:bg-emerald-900 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
+            title="Tarik seluruh jawaban murid yang ada di Google Spreadsheet ke aplikasi MIZAN"
+          >
+            <ArrowDownToLine className="w-3.5 h-3.5 text-emerald-300" />
+            <span>Tarik dari Spreadsheet</span>
+          </button>
+
+          {/* Main Action 2: Send all scored students to Google Spreadsheet */}
           <button
             onClick={handleDirectSyncToSpreadsheet}
             disabled={isDirectSyncing}
-            className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3.5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors cursor-pointer"
             title="Kirim seluruh nilai murid yang ada di rekap langsung ke Google Spreadsheet"
           >
             <Send className={`w-3.5 h-3.5 ${isDirectSyncing ? 'animate-spin' : ''}`} />
-            <span>Kirim {scoredRecords.length > 0 ? `(${scoredRecords.length}) ` : ''}ke Spreadsheet</span>
-          </button>
-
-          {/* Settings modal trigger */}
-          <button
-            onClick={() => setIsSpreadsheetModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 rounded-xl text-xs font-semibold transition-colors"
-            title="Buka pengaturan dan status Google Spreadsheet"
-          >
-            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
-            <span>Atur Spreadsheet</span>
+            <span>Kirim {scoredRecords.length > 0 ? `(${scoredRecords.length}) ` : ''}ke Sheets</span>
           </button>
 
           <button
@@ -463,34 +524,55 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
             <span>Kategori Asesmen:</span>
           </span>
           <button
-            onClick={() => setAssessmentType('sumatif')}
-            className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
-              assessmentType === 'sumatif'
-                ? 'bg-emerald-700 text-white shadow-xs'
-                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
-            }`}
-          >
-            <span>Asesmen Sumatif (Akhir Bab)</span>
-          </button>
-          <button
             onClick={() => setAssessmentType('diagnostik')}
-            className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+            className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
               assessmentType === 'diagnostik'
                 ? 'bg-emerald-700 text-white shadow-xs'
                 : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
             }`}
           >
             <span>Asesmen Awal / Diagnostik</span>
+            {categoryCounts.diag > 0 && (
+              <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                assessmentType === 'diagnostik' ? 'bg-emerald-950 text-emerald-200' : 'bg-emerald-100 text-emerald-800'
+              }`}>
+                {categoryCounts.diag}
+              </span>
+            )}
           </button>
           <button
             onClick={() => setAssessmentType('formatif')}
-            className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+            className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
               assessmentType === 'formatif'
                 ? 'bg-emerald-700 text-white shadow-xs'
                 : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
             }`}
           >
             <span>Asesmen Formatif (Latihan)</span>
+            {categoryCounts.form > 0 && (
+              <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                assessmentType === 'formatif' ? 'bg-emerald-950 text-emerald-200' : 'bg-emerald-100 text-emerald-800'
+              }`}>
+                {categoryCounts.form}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setAssessmentType('sumatif')}
+            className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+              assessmentType === 'sumatif'
+                ? 'bg-emerald-700 text-white shadow-xs'
+                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            <span>Asesmen Sumatif (Akhir Bab)</span>
+            {categoryCounts.sum > 0 && (
+              <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                assessmentType === 'sumatif' ? 'bg-emerald-950 text-emerald-200' : 'bg-emerald-100 text-emerald-800'
+              }`}>
+                {categoryCounts.sum}
+              </span>
+            )}
           </button>
         </div>
 
@@ -819,6 +901,7 @@ export const ClassGradebook: React.FC<ClassGradebookProps> = ({
         isOpen={isSpreadsheetModalOpen}
         onClose={() => setIsSpreadsheetModalOpen(false)}
         onShowToast={onShowToast || ((msg) => console.log(msg))}
+        onImportSuccess={reloadImported}
         recordsToSync={scoredRecords}
       />
     </div>
